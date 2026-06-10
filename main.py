@@ -100,7 +100,7 @@ async def transcribe_voice(file_path: str) -> str:
 
 async def claude_respond(messages: list[dict]) -> str:
     response = anthropic_client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-5",
         max_tokens=400,
         system=SYSTEM_PROMPT,
         messages=messages,
@@ -113,7 +113,7 @@ async def claude_summarise(messages: list[dict]) -> dict:
         for m in messages
     )
     response = anthropic_client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-5",
         max_tokens=1200,
         messages=[{"role": "user", "content": f"{SUMMARY_PROMPT}\n\nCONVERSATION:\n{flat}"}],
     )
