@@ -1,8 +1,11 @@
 """
 Daily Journal Telegram Bot
 --------------------------
-Voice note in → Whisper transcription → Claude follow-up questions → saved entry
+Voice note in → Whisper transcription → STAR-method follow-up questions → saved entry
 Entries are saved locally as JSON and sent as a full formatted Telegram message.
+
+STAR Method: Situation | Task | Action | Result
+The bot automatically detects STAR-worthy events and probes to complete each one.
 """
 
 import os, json, asyncio, tempfile, logging
@@ -27,33 +30,58 @@ anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 sessions: dict[int, dict] = {}
 pending_deletes: dict[int, str] = {}
 
-SYSTEM_PROMPT = """You are a thoughtful personal journal assistant. Your job is to help someone reflect on their day.
+SYSTEM_PROMPT = """You are a personal journal assistant helping someone capture their working day using the STAR method.
 
-You will receive a transcript of their voice note about their day. Your task is to:
-1. Acknowledge what they shared warmly and briefly (1-2 sentences max)
-2. Identify which of these topics they have NOT covered or have only touched on briefly:
-   - Their biggest learning or insight
-   - What they would do differently
-   - What went well / wins
-   - How they are feeling (mood/energy)
-   - Focus or intentions for tomorrow
-3. Ask about the 1-2 MOST IMPORTANT missing topics — keep it conversational, like a friend asking. Never ask more than 2 questions at once.
-4. When you have enough on all topics (or after 3 rounds of follow-up), end your message with exactly the token: [ENTRY_READY]
+STAR stands for:
+  S — SITUATION:  The context or background. What was the setting, challenge, or event?
+  T — TASK:       What was the goal, responsibility, or problem to be solved?
+  A — ACTION:     What did they actually do? Steps taken, decisions made, how they handled it.
+  R — RESULT:     What was the outcome? What changed, improved, or was learned?
 
-Keep your tone warm, brief, and conversational. This person is driving — quick, natural back-and-forth only."""
+STAR EVENT DETECTION — this is your primary job:
+Actively scan everything they say for STAR-worthy moments. These include:
+  - Any meeting, call, or conversation that had stakes or a goal
+  - A problem, challenge, or obstacle they faced
+  - A decision they made or were part of
+  - A task or project they worked on
+  - An interaction with a client, colleague, manager, or supplier
+  - Anything that went well or didn't go as planned
+  - Anything they describe as significant, tricky, frustrating, or rewarding
 
-SUMMARY_PROMPT = """Based on this conversation, write a structured journal entry as JSON only (no markdown, no backticks).
+The moment you spot a STAR-worthy event, immediately treat it as a STAR item and check which of the four elements are present or missing:
+  - SITUATION: Do we know the context and background?
+  - TASK: Do we know what they were trying to achieve?
+  - ACTION: Do we know what specific steps or decisions they took?
+  - RESULT: Do we know what actually happened as a result?
 
-Shape:
+Your behaviour:
+1. Acknowledge what they shared warmly in 1 sentence.
+2. Identify all STAR-worthy events from what they said.
+3. Work through them one at a time — complete all four STAR elements for one event before moving to the next.
+4. For each missing element, ask a specific, natural question that references the actual event — never ask generically. E.g. "You mentioned the supplier call — what were you trying to get out of that?" not "What was your task today?"
+5. Ask a maximum of 2 questions per reply. Never overwhelm.
+6. When all detected STAR events are fully covered (or after 3 rounds of follow-up), end your reply with exactly this token on its own line: [ENTRY_READY]
+
+Keep your tone warm, brief, and conversational — this person may be driving.
+Never explain the STAR framework to them. Just ask the right questions naturally."""
+
+SUMMARY_PROMPT = """Based on this conversation, write a structured STAR-method journal entry as JSON only (no markdown, no backticks).
+
+The entry must follow the STAR structure: Situation → Task → Action → Result.
+Write in first person, warm and personal, as if the person wrote it themselves.
+If there were multiple STAR events in the day, weave them together naturally within each section.
+
+Return this exact shape:
 {
   "headline": "Short punchy title for the day (max 8 words)",
-  "oneliner": "One sentence summary (max 20 words)",
-  "summary": "2-3 paragraph narrative in first person, warm and personal",
-  "learning": "Key learning or insight (1-3 sentences, or empty string)",
-  "wins": "What went well (1-3 sentences, or empty string)",
-  "differently": "What they would do differently (1-3 sentences, or empty string)",
-  "tomorrow": "Focus for tomorrow (1-3 sentences, or empty string)",
-  "feeling": "Mood and energy note (1 sentence, or empty string)"
+  "oneliner": "One sentence summary of the day's key theme (max 20 words)",
+  "situation": "The context and background for the main event(s). What was happening, what was the setting or challenge? (2-4 sentences)",
+  "task": "What the person was trying to achieve — their goal or responsibility in that situation. (2-3 sentences)",
+  "action": "The specific steps, decisions, and actions they took. Concrete — what exactly did they do and how? (3-5 sentences)",
+  "result": "What happened as a result. Outcomes, impact, feedback received. (2-3 sentences)",
+  "learning": "The key insight or lesson from today they will carry forward. (1-3 sentences, or empty string)",
+  "tomorrow": "What they are focusing on or doing differently tomorrow based on today. (1-2 sentences, or empty string)",
+  "feeling": "Brief note on mood, energy, or mindset at end of day. (1 sentence, or empty string)"
 }"""
 
 
@@ -86,7 +114,7 @@ async def claude_summarise(messages: list[dict]) -> dict:
     )
     response = anthropic_client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=1000,
+        max_tokens=1200,
         messages=[{"role": "user", "content": f"{SUMMARY_PROMPT}\n\nCONVERSATION:\n{flat}"}],
     )
     raw = response.content[0].text.replace("```json", "").replace("```", "").strip()
@@ -96,36 +124,32 @@ async def save_entry(entry: dict, user_id: int) -> dict:
     entry["id"]      = str(int(asyncio.get_event_loop().time() * 1000))
     entry["date"]    = date.today().isoformat()
     entry["user_id"] = user_id
-
-    # Save locally on Railway as JSON backup
     todays_entry_path(user_id).write_text(json.dumps(entry, indent=2))
-
-    # POST to journal app if URL is set
     if JOURNAL_API_URL:
         try:
             async with aiohttp.ClientSession() as s:
                 await s.post(JOURNAL_API_URL, json=entry)
         except Exception as e:
             logging.warning(f"Could not reach journal app: {e}")
-
     return entry
 
 def format_full_entry(entry: dict) -> str:
-    """Format a complete journal entry as a readable Telegram message."""
+    """Format a STAR-method journal entry as a readable Telegram message."""
     lines = [
         f"📓 *{entry.get('headline', 'Journal Entry')}*",
         f"_{entry.get('oneliner', '')}_",
         f"\n📅 {entry.get('date', '')}",
-        f"\n📝 *Summary*\n{entry.get('summary', '')}",
+        f"\n━━━━━━━━━━━━━━━━━━━━",
+        f"\n🔵 *SITUATION*\n{entry.get('situation', '')}",
+        f"\n🎯 *TASK*\n{entry.get('task', '')}",
+        f"\n⚡ *ACTION*\n{entry.get('action', '')}",
+        f"\n✅ *RESULT*\n{entry.get('result', '')}",
+        f"\n━━━━━━━━━━━━━━━━━━━━",
     ]
     if entry.get('learning'):
-        lines.append(f"\n💡 *Biggest learning*\n{entry['learning']}")
-    if entry.get('wins'):
-        lines.append(f"\n🏆 *Wins & highlights*\n{entry['wins']}")
-    if entry.get('differently'):
-        lines.append(f"\n🔄 *What I'd do differently*\n{entry['differently']}")
+        lines.append(f"\n💡 *Key learning*\n{entry['learning']}")
     if entry.get('tomorrow'):
-        lines.append(f"\n🎯 *Focus for tomorrow*\n{entry['tomorrow']}")
+        lines.append(f"\n🔜 *Tomorrow's focus*\n{entry['tomorrow']}")
     if entry.get('feeling'):
         lines.append(f"\n😌 *Mindset & energy*\n{entry['feeling']}")
     lines.append("\n_Use /delete to remove this entry or /restart to record again._")
@@ -177,7 +201,6 @@ async def finalise_entry(update: Update, user_id: int):
     try:
         entry = await claude_summarise(sessions[user_id]["messages"])
         saved = await save_entry(entry, user_id)
-        # Send full formatted entry back in Telegram so it's readable on phone
         full_msg = format_full_entry(saved)
         await update.message.reply_text(full_msg, parse_mode="Markdown")
     except Exception as e:
@@ -192,13 +215,18 @@ async def finalise_entry(update: Update, user_id: int):
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Hey! 👋 I'm your daily journal bot.\n\n"
-        "Send me a voice note about your day — as long as you like — and I'll handle the rest.\n\n"
-        "I'll transcribe it, ask a couple of follow-up questions if anything's missing, "
-        "then send you back the full formatted entry right here in Telegram.\n\n"
+        "Send me a voice note about your day and I'll structure it using the *STAR method*:\n\n"
+        "🔵 *Situation* — what was the context?\n"
+        "🎯 *Task* — what were you trying to achieve?\n"
+        "⚡ *Action* — what did you actually do?\n"
+        "✅ *Result* — what happened?\n\n"
+        "I'll automatically spot any key moments from your day and ask follow-up questions "
+        "to make sure every event is fully captured.\n\n"
         "Commands:\n"
-        "/skip — save right now, skip remaining questions\n"
+        "/skip — save right now, no more questions\n"
         "/restart — scrap draft and start fresh\n"
-        "/delete — delete today's saved entry"
+        "/delete — delete today's saved entry",
+        parse_mode="Markdown"
     )
 
 async def cmd_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -228,7 +256,7 @@ async def cmd_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     entry_file = todays_entry_path(user_id)
     sessions.pop(user_id, None)
     if not entry_file.exists():
-        await update.message.reply_text(f"No saved entry for today ({today}).\nUse /restart to scrap a draft.")
+        await update.message.reply_text(f"No saved entry for today ({today}).\nUse /restart to scrap a draft in progress.")
         return
     try:
         headline = json.loads(entry_file.read_text()).get("headline", "today's entry")
@@ -251,7 +279,7 @@ async def cmd_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f.unlink()
         await update.message.reply_text(f"✅ Entry for {target_date} deleted.\n\nSend a voice note to start a new one.")
     else:
-        await update.message.reply_text("Entry wasn't found — may already be removed.")
+        await update.message.reply_text("Entry wasn't found — may have already been removed.")
 
 async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
