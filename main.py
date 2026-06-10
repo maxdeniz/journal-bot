@@ -183,9 +183,23 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text    = update.message.text.strip()
+
+    # No active session — treat this text as the opening brain dump, start a new entry
     if user_id not in sessions or sessions[user_id].get("done"):
-        await update.message.reply_text("No active entry in progress. Send a voice note to start one.")
+        await update.message.reply_text("Got it — reading through your day… 📝")
+        messages = [{"role": "user", "content": f"Here's my day:\n\n{text}"}]
+        sessions[user_id] = {"transcript": text, "messages": messages, "done": False}
+        reply = await claude_respond(messages)
+        sessions[user_id]["messages"].append({"role": "assistant", "content": reply})
+        if "[ENTRY_READY]" in reply:
+            reply = reply.replace("[ENTRY_READY]", "").strip()
+            sessions[user_id]["done"] = True
+        await update.message.reply_text(reply)
+        if sessions[user_id]["done"]:
+            await finalise_entry(update, user_id)
         return
+
+    # Active session — continue the conversation
     sessions[user_id]["messages"].append({"role": "user", "content": text})
     reply = await claude_respond(sessions[user_id]["messages"])
     sessions[user_id]["messages"].append({"role": "assistant", "content": reply})
@@ -215,7 +229,7 @@ async def finalise_entry(update: Update, user_id: int):
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Hey! 👋 I'm your daily journal bot.\n\n"
-        "Send me a voice note about your day and I'll structure it using the *STAR method*:\n\n"
+        "Send me a voice note or type/paste your day and I'll structure it using the *STAR method*:\n\n"
         "🔵 *Situation* — what was the context?\n"
         "🎯 *Task* — what were you trying to achieve?\n"
         "⚡ *Action* — what did you actually do?\n"
