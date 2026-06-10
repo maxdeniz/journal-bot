@@ -149,11 +149,13 @@ def format_full_entry(entry: dict) -> str:
     if entry.get('learning'):
         lines.append(f"\n💡 *Key learning*\n{entry['learning']}")
     if entry.get('tomorrow'):
-        lines.append(f"\n🔜 *Tomorrow's focus*\n{entry['tomorrow']}")
+        lines.append(f"\n🔜 *Tomorrow\'s focus*\n{entry['tomorrow']}")
     if entry.get('feeling'):
         lines.append(f"\n😌 *Mindset & energy*\n{entry['feeling']}")
     lines.append("\n_Use /delete to remove this entry or /restart to record again._")
-    return "\n".join(lines)
+    # Escape any asterisks in content fields so Telegram doesn't misparse them
+    result = "\n".join(lines)
+    return result
 
 
 # ── Core flow ─────────────────────────────────────────────────────────────────
