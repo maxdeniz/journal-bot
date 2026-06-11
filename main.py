@@ -112,13 +112,32 @@ async def claude_summarise(messages: list[dict]) -> dict:
         f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
         for m in messages
     )
-    response = anthropic_client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=1200,
-        messages=[{"role": "user", "content": f"{SUMMARY_PROMPT}\n\nCONVERSATION:\n{flat}"}],
-    )
-    raw = response.content[0].text.replace("```json", "").replace("```", "").strip()
-    return json.loads(raw)
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = anthropic_client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=1500,
+                messages=[{"role": "user", "content": f"{SUMMARY_PROMPT}\n\nCONVERSATION:\n{flat}"}],
+            )
+            raw = response.content[0].text
+            # Strip any markdown code fences
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            # Find the JSON object even if there's surrounding text
+            start = raw.find("{")
+            end   = raw.rfind("}") + 1
+            if start >= 0 and end > start:
+                raw = raw[start:end]
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            last_error = e
+            logging.warning(f"JSON parse failed on attempt {attempt+1}: {e}")
+            await asyncio.sleep(1)
+        except Exception as e:
+            last_error = e
+            logging.error(f"Claude summarise error on attempt {attempt+1}: {e}")
+            await asyncio.sleep(2)
+    raise Exception(f"Failed to generate entry after 3 attempts: {last_error}")
 
 async def save_entry(entry: dict, user_id: int) -> dict:
     entry["id"]      = str(int(asyncio.get_event_loop().time() * 1000))
@@ -221,9 +240,13 @@ async def finalise_entry(update: Update, user_id: int):
         await update.message.reply_text(full_msg, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"Failed to save entry: {e}")
-        await update.message.reply_text("Something went wrong saving the entry. Try /save to retry.")
-    finally:
-        sessions.pop(user_id, None)
+        await update.message.reply_text(
+            "⚠️ Something went wrong writing up the entry.\n\n"
+            "Your conversation is still saved — just type /save to try again. "
+            "If it keeps failing, type /skip and it will try one more time."
+        )
+        return  # Don't pop session so /save can retry
+    sessions.pop(user_id, None)
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
