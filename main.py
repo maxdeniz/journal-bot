@@ -274,7 +274,22 @@ async def cmd_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sessions[user_id]["done"] = True
         await finalise_entry(update, user_id)
     else:
-        await update.message.reply_text("Nothing in progress. Send a voice note to start.")
+        # Check if there's already a saved entry for today
+        entry_file = todays_entry_path(user_id)
+        if entry_file.exists():
+            try:
+                data = json.loads(entry_file.read_text())
+                headline = data.get("headline", "today's entry")
+                await update.message.reply_text(
+                    f"✅ Your entry for today is already saved!\n\n"
+                    f"*{headline}*\n\n"
+                    f"View it at your journal app, or send a new message to start a fresh entry.",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                await update.message.reply_text("✅ Your entry for today is already saved. Check your journal app!")
+        else:
+            await update.message.reply_text("Nothing in progress. Send a message to start a new entry.")
 
 async def cmd_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await cmd_skip(update, ctx)
